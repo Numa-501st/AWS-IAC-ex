@@ -1,5 +1,5 @@
 # AWS_IAC_Ex
-This is some IAC for a set AWS scenario. 
+This is some IAC for a set AWS scenario. It includes both a CloudFormation and Terraform file to spin up AWS architecutre using IAC.
 
 It meets all the requirements of the scenario and includes bash script that updates the system, installs the Apache HTTP server, starts the service, and enables it to start on boot. This script is designed to be run on an Amazon Linux or a similar Linux distribution that uses the yum package manager.
 
