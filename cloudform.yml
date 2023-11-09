@@ -1,0 +1,331 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  smeVpcCidr:
+    Default: "10.0.0.0/16"
+    Type: String
+
+  publicSubnet1Cidr:
+    Default: "10.0.0.0/20"
+    Type: String
+
+  privateSubnet1Cidr:
+    Default: "10.0.32.0/20"
+    Type: String
+
+  privateSubnet2Cidr:
+    Default: "10.0.48.0/20"
+    Type: String
+
+  smeBucketName:
+    Default: "smebucket1323q"
+    Type: String
+
+Resources:
+  myBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref smeBucketName
+      AccessControl: Private
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Name
+          Value: MyS3Bucket
+        - Key: Environment
+          Value: Production
+
+###########
+# VPC with Internet Gateway
+###########
+
+  smeVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref smeVpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: SME VPC
+
+  smeIgw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: SME Internet Gateway
+
+  smeIgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref smeVpc
+      InternetGatewayId: !Ref smeIgw
+
+###########
+# Public Route Table
+###########
+
+  smeRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref smeVpc
+      Tags:
+        - Key: Name
+          Value: Route table
+
+  smeRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref publicSubnet1
+      RouteTableId: !Ref smeRouteTable
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: smeIgwAttachment
+    Properties:
+      RouteTableId: !Ref smeRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref smeIgw
+
+###########
+# Public Subnet
+###########
+
+  publicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref smeVpc
+      CidrBlock: !Ref publicSubnet1Cidr
+      AvailabilityZone: 
+        Fn::Select: 
+          - '0'
+          - Fn::GetAZs: ""
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public Subnet 1
+
+###########
+# Private Subnets
+###########
+
+  privateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref smeVpc
+      CidrBlock: !Ref privateSubnet1Cidr
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: "us-east-1a"
+      Tags:
+        - Key: Name
+          Value: Private Subnet 1
+
+  privateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref smeVpc
+      CidrBlock: !Ref privateSubnet2Cidr
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: "us-east-1b"
+      Tags:
+        - Key: Name
+          Value: Private Subnet 2
+
+###########
+# Security Group
+###########
+
+  smeSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref smeVpc
+      GroupDescription: Web Security Group
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          FromPort: '0'
+          ToPort: '65535'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: Web Security Group
+
+###########
+# EFS
+###########
+  myEfs:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      FileSystemTags:
+        - Key: Name
+          Value: MyEFS
+        - Key: Environment
+          Value: Production
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+      Encrypted: false
+
+  myEfsMountTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref myEfs
+      SubnetId: !Ref privateSubnet1
+      SecurityGroups:
+        - !GetAtt smeSG.GroupId
+
+###########
+# DB
+###########        
+
+  smeDbSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: Database Security Group
+      GroupDescription: Allow inbound traffic from application layer
+      VpcId: !Ref smeVpc
+      SecurityGroupIngress:
+        - Description: Allow traffic from application layer
+          FromPort: '3306'
+          ToPort: '3306'
+          IpProtocol: tcp
+          SourceSecurityGroupId: !GetAtt smeSG.GroupId
+      SecurityGroupEgress:
+        - FromPort: '32768'
+          ToPort: '65535'
+          IpProtocol: tcp
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: Database Security Group
+
+  smeDbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: My DB subnet group
+      SubnetIds:
+        - !Ref privateSubnet1
+        - !Ref privateSubnet2
+      Tags:
+        - Key: Name
+          Value: My DB subnet group
+
+  smeDbInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllocatedStorage: '100'
+      DBInstanceIdentifier: mydbinstance
+      DBName: mydb
+      Engine: oracle-se2
+      DBInstanceClass: db.t3.large
+      MultiAZ: true
+      MasterUsername: SME6
+      MasterUserPassword: SME6
+      LicenseModel: license-included
+      DBSubnetGroupName: !Ref smeDbSubnetGroup
+      VPCSecurityGroups:
+        - !GetAtt smeDbSg.GroupId
+
+###########
+# ELB
+###########
+
+  myElb:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      Subnets:
+        - !Ref publicSubnet1
+      SecurityGroups:
+        - !GetAtt smeSG.GroupId
+      LoadBalancerName: my-elb
+      Listeners:
+        - LoadBalancerPort: '80'
+          InstancePort: '80'
+          Protocol: HTTP
+      HealthCheck:
+        Target: "HTTP:80/"
+        Interval: '30'
+        HealthyThreshold: '2'
+        UnhealthyThreshold: '2'
+        Timeout: '5'
+      Tags:
+        - Key: Name
+          Value: MyELB
+
+###########
+# Launch config
+###########
+
+  MyLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: "ami-01bc990364452ab3e"
+      InstanceType: t2.micro
+      SecurityGroups:
+        - !GetAtt smeSG.GroupId
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          echo "Hello from User Data!"
+
+###########
+# ASG
+###########
+  MyAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      DesiredCapacity: '2'
+      MaxSize: '5'
+      MinSize: '1'
+      LaunchConfigurationName: !Ref MyLaunchConfig
+      VPCZoneIdentifier:
+        - !Ref publicSubnet1
+        - !Ref privateSubnet2
+      Tags:
+        - Key: Name
+          Value: MyASGInstance
+          PropagateAtLaunch: 'true'
+
+###########
+# Nat Gateway
+###########
+
+  myNatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt natEip.AllocationId
+      SubnetId: !Ref publicSubnet1
+
+  natEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+Outputs:
+  smeDbInstanceEndpoint:
+    Value: !GetAtt smeDbInstance.Endpoint.Address
+    Description: RDS instance endpoint address
+
+  myElbDNSName:
+    Value: !GetAtt myElb.DNSName
+    Description: DNS Name of the ELB
+
+  launchConfigSecurityGroupId:
+    Value: !GetAtt MyLaunchConfig.SecurityGroups
+    Description: Security Group ID of the Launch Configuration
+
+  myAsgName:
+    Value: !Ref MyAutoScalingGroup
+    Description: Auto Scaling Group Name
